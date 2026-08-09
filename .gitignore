@@ -1,0 +1,24 @@
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# PyCharm
+.idea/
+
+# Model checkpoints / weights
+*.pt
+*.pth
+
+# Data
+data/
+datasets/
+
+# Generated results
+results/
+
+# OS files
+.DS_Store
+Thumbs.db
