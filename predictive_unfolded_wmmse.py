@@ -4,10 +4,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE = torch.float32
 
 class Predictive_UnfoldedWMMSE(nn.Module):
-    def __init__(self, L, N, K, noise_power, Gamma_pgd, delta=1):
+    def __init__(self, L, N, K, noise_power, Gamma, delta=1):
         super().__init__()
         self.NPGRs = nn.ModuleList([NPGR(delta=delta) for l in range(L)])
-        self.Gamma = torch.nn.Parameter(Gamma_pgd[:L].clone())# [L,K]
+        self.Gamma = torch.nn.Parameter(Gamma[:L].clone())# [L,K]
         self.L = L
         self.N = N
         self.K = K
@@ -125,20 +125,23 @@ class Predictive_UnfoldedWMMSE(nn.Module):
         Vout_temp = Vin - gradient * gamma_lk
         return self.project_power(Vout_temp, total_power)
 
-    def forward(self, mob_features, channel_hist_seq, user_weights , total_power, state, num_layers_eval=None):
+    def forward(self, mob_features, channel_hist_seq, user_weights , total_power, stage, num_layers_eval=None):
 
         if num_layers_eval is None:
             num_layers_eval = self.L
+
+        if not 1 <= num_layers_eval <= self.L:
+            raise ValueError(f"num_layers_eval must be between 1 and {self.L}")
 
         channel_n = channel_hist_seq[:,-1]
         B, N, twoM, _ = channel_n.shape
         V = self.build_initial_precoder(channel_n, total_power) #V(0,0)
 
         for l in range(num_layers_eval):
-            if state == 1:
+            if stage == 1:
                 w = self.compute_w(channel_n, V)
                 u = self.compute_u(channel_n, V)
-            elif state == 2:
+            elif stage == 2:
                 NPGR_l = self.NPGRs[l]
                 u_seq, w_seq = self.compute_u_w_seq(channel_hist_seq, V)  # [B,T,N,2,1] u{n-4},...,u{n} and [B,T,N] w{n-4},...,w{n}
             gamma_l = self.Gamma[l,:] #[K]
@@ -146,9 +149,9 @@ class Predictive_UnfoldedWMMSE(nn.Module):
             # ----- K PGD steps -----
             for k in range(self.K):
                 # build gradient sequence with the current V:
-                if state == 1:
+                if stage == 1:
                     grad = self.compute_gradient(w, user_weights, u, channel_n, V)
-                elif state == 2:
+                elif stage == 2:
                     grad_seq = self.compute_gradient_seq(w_seq, user_weights, u_seq, channel_hist_seq, V)
                     grad = NPGR_l(mob_features,channel_hist_seq,V,grad_seq,u_seq,w_seq)
                 #PGD step
