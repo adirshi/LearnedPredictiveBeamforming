@@ -5,7 +5,7 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 import hdf5storage
 import json
-from beamforming_utils import (make_user_weights,load_hist_fut,convert_to_user_channels,complex_seq_ri_to_wmmse_channel,complex_vector_ri_to_wmmse_channel)
+from utils import (load_channel_data, channel_to_user_coefficients, ri_sequence_to_wmmse_channel, ri_to_wmmse_channel)
 from predictive_unfolded_wmmse import Predictive_UnfoldedWMMSE
 from metrics import compute_WSR
 
@@ -72,7 +72,7 @@ def save_norm_stats(norm_stats, save_path="Weights/mobility_npgr_norm_stats.json
     print(f"Saved mobility NPGR normalization stats to: {save_path}")
 
 def train_pgd_step_sizes(channel_nplusd_train, channel_hist_seq_train,
-     channel_nplusd_val, channel_hist_seq_val, user_weights, num_epochs, batch_size, K, L, noise_power, SNR_range, delta, weights_dir="Weights"):
+     channel_nplusd_val, channel_hist_seq_val, user_weights, num_epochs, batch_size, K, L, noise_power, SNR_range, scenario, delta, weights_dir="Weights"):
     print(f"\n************ Starting stage 1 of training ************")
     S_train = channel_hist_seq_train.shape[0]
     S_val = channel_hist_seq_val.shape[0]
@@ -199,18 +199,18 @@ def train_pgd_step_sizes(channel_nplusd_train, channel_hist_seq_train,
         plt.show()
 
     os.makedirs(weights_dir, exist_ok=True)
-    final_gamma_path = os.path.join(weights_dir,f"PGD_step_sizes_L{L}_K{K}_stage1.pt")
+    final_gamma_path = os.path.join(weights_dir,f"PGD_step_sizes_{scenario}_delta{delta}_L{L}_K{K}_stage1.pt")
     torch.save(results[L]["Gamma"], final_gamma_path)
     print(f"Saved final PGD step sizes to: {final_gamma_path}")
 
 def train_NPGRs_and_tune_PGD_step_sizes(channel_nplusd_train, channel_hist_seq_train,mob_features_train,
-     channel_nplusd_val, channel_hist_seq_val, mob_features_val, user_weights, num_epochs, batch_size, K, L, noise_power, SNR_range, delta, weights_dir="Weights"):
+     channel_nplusd_val, channel_hist_seq_val, mob_features_val, user_weights, num_epochs, batch_size, K, L, noise_power, SNR_range, scenario, delta, weights_dir="Weights"):
     print(f"\n************ Starting stage 2 of training ************")
 
     S_train = channel_nplusd_train.shape[0]
     S_val = channel_nplusd_val.shape[0]
     _, N, twoM, _ = channel_nplusd_train.shape
-    gamma_path = os.path.join(weights_dir,f"PGD_step_sizes_L{L}_K{K}_stage1.pt")
+    gamma_path = os.path.join(weights_dir,f"PGD_step_sizes_{scenario}_delta{delta}_L{L}_K{K}_stage1.pt")
     Gamma = torch.load(gamma_path,map_location=device,weights_only=False).to(device=device, dtype=DTYPE)
     model = Predictive_UnfoldedWMMSE(L, N,K,noise_power, Gamma, delta).to(device)
 
@@ -315,23 +315,22 @@ def train_NPGRs_and_tune_PGD_step_sizes(channel_nplusd_train, channel_hist_seq_t
 
     # save checkpoint for this depth
     os.makedirs(weights_dir, exist_ok=True)
-    layer_save_path = os.path.join(weights_dir, f"Predictive_unfolded_WMMSE_model_L{L}.pt")
+    layer_save_path = os.path.join(weights_dir, f"Predictive_unfolded_WMMSE_model_{scenario}_delta{delta}_L{L}.pt")
     torch.save({"L": L,"model_state": model.state_dict(),"Gamma": model.Gamma.detach().cpu(),"best_val_loss": best_val_loss}, layer_save_path)
     print(f"Saved best checkpoint for L={L} to: {layer_save_path}")
 
-def train_predictive_unfolded_wmmse(channel_nplusd_train, channel_hist_seq_train, mob_features_train, channel_nplusd_val, channel_hist_seq_val, mob_features_val, user_weights, num_epochs, batch_size, K, L, noise_power, SNR_range, delta, weights_dir="Weights"):
+def train_predictive_unfolded_wmmse(channel_nplusd_train, channel_hist_seq_train, mob_features_train, channel_nplusd_val, channel_hist_seq_val, mob_features_val, user_weights, num_epochs, batch_size, K, L, noise_power, SNR_range, scenario, delta, weights_dir="Weights"):
     #Stage 1
     train_pgd_step_sizes(channel_nplusd_train, channel_hist_seq_train,
-                         channel_nplusd_val, channel_hist_seq_val, user_weights, num_epochs, batch_size, K, L, noise_power, SNR_range,delta, weights_dir=weights_dir)
+                         channel_nplusd_val, channel_hist_seq_val, user_weights, num_epochs, batch_size, K, L, noise_power, SNR_range, scenario, delta, weights_dir=weights_dir)
     #Stage 2
     train_NPGRs_and_tune_PGD_step_sizes(channel_nplusd_train, channel_hist_seq_train, mob_features_train,
-                                        channel_nplusd_val, channel_hist_seq_val, mob_features_val, user_weights, num_epochs, batch_size, K, L, noise_power, SNR_range,delta, weights_dir=weights_dir)
-
+                                        channel_nplusd_val, channel_hist_seq_val, mob_features_val, user_weights, num_epochs, batch_size, K, L, noise_power, SNR_range,scenario,delta, weights_dir=weights_dir)
 
 if __name__ == "__main__":
     np.random.seed(1234)
     torch.manual_seed(1234)
-
+    scenario = "UMa"  # "UMa" or "RMa"
     T_seq = 5
     delta = 1
     K = 4
@@ -342,33 +341,33 @@ if __name__ == "__main__":
     noise_power = torch.tensor(1.0,dtype=DTYPE,device=device)
 
     # -------- Paths --------
-    hist_path_train = "data/UMa/train_val/H_hist_train_noisy.mat"
-    fut_path_train = "data/UMa/train_val/H_fut_train.mat"
-    hist_path_val = "data/UMa/train_val/H_hist_val_noisy.mat"
-    fut_path_val = "data/UMa/train_val/H_fut_val.mat"
+    hist_path_train = f"data/{scenario}/train_val/H_hist_train_noisy.mat"
+    fut_path_train = f"data/{scenario}/train_val/H_fut_train.mat"
+    hist_path_val = f"data/{scenario}/train_val/H_hist_val_noisy.mat"
+    fut_path_val = f"data/{scenario}/train_val/H_fut_val.mat"
 
-    Pxy_train_path = "data/UMa/train_val/Pxy_hist_train.mat"
-    Vxy_train_path = "data/UMa/train_val/Vxy_hist_train.mat"
-    Pxy_val_path = "data/UMa/train_val/Pxy_hist_val.mat"
-    Vxy_val_path = "data/UMa/train_val/Vxy_hist_val.mat"
+    Pxy_train_path = f"data/{scenario}/train_val/Pxy_hist_train.mat"
+    Vxy_train_path = f"data/{scenario}/train_val/Vxy_hist_train.mat"
+    Pxy_val_path = f"data/{scenario}/train_val/Pxy_hist_val.mat"
+    Vxy_val_path = f"data/{scenario}/train_val/Vxy_hist_val.mat"
 
     # -------- Load channels --------
-    H_hist_train, H_fut_train = load_hist_fut(hist_path_train,fut_path_train,hist_key="H_hist_train",fut_key="H_fut_train")
-    H_hist_val, H_fut_val = load_hist_fut(hist_path_val,fut_path_val,hist_key="H_hist_val",fut_key="H_fut_val")
-    hist_train = convert_to_user_channels(H_hist_train)
-    hist_val = convert_to_user_channels(H_hist_val)
-    future_train = convert_to_user_channels(H_fut_train)
-    future_val = convert_to_user_channels(H_fut_val)
+    H_hist_train, H_fut_train = load_channel_data(hist_path_train,fut_path_train,hist_key="H_hist_train",fut_key="H_fut_train") # [S_train,N,hist_len,Pol,Mv,Mh] complex , [S_train,U,fut_len,Pol,Mv,Mh] complex
+    H_hist_val, H_fut_val = load_channel_data(hist_path_val,fut_path_val,hist_key="H_hist_val",fut_key="H_fut_val") # [S_val,N,hist_len,Pol,Mv,Mh] complex , [S_val,U,fut_len,Pol,Mv,Mh] complex
+    hist_train = channel_to_user_coefficients(H_hist_train) #[S_train, N, hist_len,M, 2] Where M = Pol * Mv * Mh
+    hist_val = channel_to_user_coefficients(H_hist_val)     #[S_val, N, hist_len, M, 2]
+    future_train = channel_to_user_coefficients(H_fut_train)#[S_train, N, fut_len, M, 2]
+    future_val = channel_to_user_coefficients(H_fut_val)    #[S_val, N, fut_len, M, 2]
 
     # -------- Historical channel sequence --------
-    hist_train_seq = hist_train[:, :, -T_seq:, :, :]
+    hist_train_seq = hist_train[:, :, -T_seq:, :, :]  #H(n), H(n-1), ... , H(n-T_seq+1)
     hist_val_seq = hist_val[:, :, -T_seq:, :, :]
-    channel_hist_seq_train = (complex_seq_ri_to_wmmse_channel(hist_train_seq).to(device=device, dtype=DTYPE))
-    channel_hist_seq_val = (complex_seq_ri_to_wmmse_channel(hist_val_seq).to(device=device, dtype=DTYPE))
+    channel_hist_seq_train = (ri_sequence_to_wmmse_channel(hist_train_seq).to(device=device, dtype=DTYPE)) # [S_train,T_seq,N,2M,2]
+    channel_hist_seq_val = (ri_sequence_to_wmmse_channel(hist_val_seq).to(device=device, dtype=DTYPE))      # [S_val,T_seq,N,2M,2]
 
     # -------- Future channel H_{n+delta} --------
-    channel_nplusd_train = (complex_vector_ri_to_wmmse_channel(future_train[:, :, delta - 1, :, :]).to(device=device, dtype=DTYPE))
-    channel_nplusd_val = (complex_vector_ri_to_wmmse_channel(future_val[:, :, delta - 1, :, :]).to(device=device, dtype=DTYPE))
+    channel_nplusd_train = (ri_to_wmmse_channel(future_train[:, :, delta - 1, :, :]).to(device=device, dtype=DTYPE)) # [S_train,N,2M,2]
+    channel_nplusd_val = (ri_to_wmmse_channel(future_val[:, :, delta - 1, :, :]).to(device=device, dtype=DTYPE))     # [S_val,N,2M,2]
 
     # -------- Mobility --------
     Pxy_train, Vxy_train = load_posvel(Pxy_train_path,Vxy_train_path,pxy_key="Pxy_train",vxy_key="Vxy_train")
@@ -386,4 +385,4 @@ if __name__ == "__main__":
 
     # -------- Train --------
     train_predictive_unfolded_wmmse(channel_nplusd_train,channel_hist_seq_train,mob_train,channel_nplusd_val,channel_hist_seq_val,mob_val,user_weights,
-        num_epochs=num_epochs,batch_size=batch_size,K=K,L=L,noise_power=noise_power,SNR_range=SNR_range,delta=delta)
+        num_epochs=num_epochs,batch_size=batch_size,K=K,L=L,noise_power=noise_power,SNR_range=SNR_range,scenario=scenario,delta=delta)

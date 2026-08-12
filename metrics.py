@@ -1,7 +1,9 @@
 import torch
+import torch.nn as nn
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE = torch.float32
 log2 = torch.log(torch.tensor(2.0, dtype=DTYPE, device=device))
+
 def compute_WSR(noise_power, user_weights, channel, precoder):
     """
     user_weights : [1, N, 1]
@@ -29,3 +31,23 @@ def compute_WSR(noise_power, user_weights, channel, precoder):
     # sum over batch and users -> scalar (sum over B and N)
     WSR = torch.sum(weights * (torch.log1p(sinr) / log2))
     return WSR / B
+
+def NMSE_cuda(x_hat, x):
+    power = torch.sum(x ** 2)
+    mse = torch.sum((x - x_hat) ** 2)
+    nmse = mse / power
+    return nmse
+
+
+class NMSELoss(nn.Module):
+    def __init__(self, reduction='mean'):
+        super(NMSELoss, self).__init__()
+        self.reduction = reduction
+
+    def forward(self, x_hat, x):
+        nmse = NMSE_cuda(x_hat, x)
+        if self.reduction == 'mean':
+            nmse = torch.mean(nmse)
+        else:
+            nmse = torch.sum(nmse)
+        return nmse
