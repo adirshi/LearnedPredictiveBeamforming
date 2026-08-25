@@ -12,18 +12,17 @@ from torch.utils.data import DataLoader
 epochs = 400
 batch_size = 1024
 num_workers = 2
+resume_training = False
 
 def save_best_checkpoint(model, save_path):
     torch.save(model.state_dict(), save_path)
 
 def save_norm_stats(norm_stats, save_path):
-    stats_to_save = {"mean": norm_stats["mean"].tolist(), "std": norm_stats["std"].tolist()}
     with open(save_path, "w", encoding="utf-8") as f:
-        json.dump(stats_to_save, f, indent=4)
+        json.dump(norm_stats, f, indent=4)
 
-def plot_losses(train_losses, val_losses, save_path):
+def plot_losses(train_losses, val_losses):
     epochs_axis = np.arange(1, len(train_losses) + 1)
-
     plt.figure(figsize=(8,5))
     plt.plot(epochs_axis, train_losses, label="Train Loss")
     plt.plot(epochs_axis, val_losses, label="Validation Loss")
@@ -34,7 +33,6 @@ def plot_losses(train_losses, val_losses, save_path):
     plt.grid(True)
     plt.yscale("log")
     plt.tight_layout()
-    plt.savefig(save_path, dpi=200)
     plt.show()
 
 def train(model, training_data_loader, validate_data_loader, optimizer, criterion, device, save_path):
@@ -94,7 +92,6 @@ if __name__ == "__main__":
 
     save_path = f"Weights/LLM4CP_{scenario}.pth"
     norm_stats_path = f"Weights/LLM4CP_{scenario}_norm_stats.json"
-    loss_fig_path = f"Weights/loss_curve_{scenario}.png"
 
     train_hist_path = f"data/{scenario}/train_val/H_hist_train_noisy.mat"
     train_fut_path = f"data/{scenario}/train_val/H_fut_train.mat"
@@ -102,13 +99,13 @@ if __name__ == "__main__":
     val_fut_path = f"data/{scenario}/train_val/H_fut_val.mat"
     resume_path = save_path
     # Build train, validation datasets
-    train_set, norm_stats, train_meta = build_dataset(file_path_hist=train_hist_path,file_path_fut=train_fut_path,hist_key="H_hist_train",fut_key="H_fut_train",num_streams=32,snr_range=(5.0, 20.0),
-        add_noise_flag=False,seed=42,norm_stats=None,fit_norm=True,shuffle_pairs=True)
+    train_set, norm_stats, train_meta = build_dataset(file_path_hist=train_hist_path,file_path_fut=train_fut_path,hist_key="H_hist_train",fut_key="H_fut_train",num_streams=32,
+        norm_stats=None,fit_norm=True,shuffle_pairs=True)
 
     save_norm_stats(norm_stats, norm_stats_path)
 
-    validate_set, _, val_meta = build_dataset(file_path_hist=val_hist_path,file_path_fut=val_fut_path,hist_key="H_hist_val",fut_key="H_fut_val",num_streams=32,snr_range=(5.0, 20.0),
-        add_noise_flag=False,seed=43,norm_stats=norm_stats,fit_norm=False,shuffle_pairs=False,)
+    validate_set, _, val_meta = build_dataset(file_path_hist=val_hist_path,file_path_fut=val_fut_path,hist_key="H_hist_val",fut_key="H_fut_val",num_streams=32,
+                                              norm_stats=norm_stats,fit_norm=False,shuffle_pairs=False)
 
     print("Train meta:", train_meta)
     print("Val meta:", val_meta)
@@ -123,14 +120,17 @@ if __name__ == "__main__":
 
     model = Model(pred_len=4, prev_len=16).to(device)
 
-    if os.path.exists(resume_path):
-        print(f"\nLoading checkpoint from: {resume_path}")
-        state_dict = torch.load(resume_path, map_location=device, weights_only=True)
-        model.load_state_dict(state_dict)
-        print("Checkpoint loaded successfully.\n")
+    if resume_training:
+        if os.path.exists(resume_path):
+            print(f"\nLoading checkpoint from: {resume_path}")
+            state_dict = torch.load(resume_path,map_location=device,weights_only=True)
+            model.load_state_dict(state_dict)
+            print("Checkpoint loaded successfully.\n")
+        else:
+            print(f"\nCheckpoint not found: {resume_path}")
+            print("Training will start from scratch.\n")
     else:
-        print(f"\nCheckpoint not found: {resume_path}")
-        print("Training will start from scratch.\n")
+        print("\nTraining from scratch.\n")
 
     total = sum(param.nelement() for param in model.parameters())
     print("Number of parameter: %.5fM" % (total / 1e6))
@@ -142,7 +142,7 @@ if __name__ == "__main__":
         shuffle=True,num_workers=num_workers,pin_memory=True,persistent_workers=(num_workers > 0),drop_last=True)
 
     validate_data_loader = DataLoader(validate_set,batch_size=batch_size,
-        shuffle=False,num_workers=num_workers,pin_memory=True,persistent_workers=(num_workers > 0),drop_last=True)
+        shuffle=False,num_workers=num_workers,pin_memory=True,persistent_workers=(num_workers > 0),drop_last=False)
 
     optimizer = optim.Adam(model.parameters(), lr=1e-4, betas=(0.9, 0.999), weight_decay=0.0001)
     criterion = NMSELoss().to(device)
@@ -150,4 +150,4 @@ if __name__ == "__main__":
     train_losses, val_losses = train(model=model,training_data_loader=training_data_loader,validate_data_loader=validate_data_loader,
         optimizer=optimizer,criterion=criterion,device=device,save_path=save_path)
 
-    plot_losses(train_losses,val_losses,"Weights/loss_curve.png")
+    plot_losses(train_losses,val_losses)
