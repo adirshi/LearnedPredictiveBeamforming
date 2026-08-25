@@ -186,11 +186,8 @@ def ri_to_wmmse_channel(h_ri):
     Convert a complex channel represented by its real and imaginary
     parts to the real-valued matrix representation used by WMMSE.
 
-    Input:
-        h_ri: [B, N, M, 2]
-
-    Returns:
-        H: [B, N, 2M, 2]
+    Input: h_ri: [B, N, M, 2]
+    Returns: H: [B, N, 2M, 2]
     """
     h_real = h_ri[..., 0]   # [B,N,M]
     h_imag = h_ri[..., 1]   # [B,N,M]
@@ -201,14 +198,11 @@ def ri_to_wmmse_channel(h_ri):
 
 def ri_sequence_to_wmmse_channel(h_seq_ri):
     """
-    Input:
-        h_seq_ri: [S, N, seq_len, M, 2]
-    Returns:
-        H_seq: [S, seq_len, N, 2M, 2]
+    Input: h_seq_ri: [S, N, seq_len, M, 2]
+    Returns: H_seq: [S, seq_len, N, 2M, 2]
     """
     h_real = h_seq_ri[..., 0]  # [S,N,seq_len,M]
     h_imag = h_seq_ri[..., 1]  # [S,N,seq_len,M]
-
     top = torch.stack([h_real, -h_imag],dim=-1)  # [S,N,seq_len,M,2]
     bottom = torch.stack([h_imag, h_real],dim=-1)  # [S,N,seq_len,M,2]
     H_seq = torch.cat([top, bottom],dim=3)  # [S,N,seq_len,2M,2]
@@ -218,10 +212,8 @@ def ri_sequence_to_wmmse_channel(h_seq_ri):
 def ri_to_complex_channel(h_ri):
     """
     Convert a real-imaginary channel representation to complex form.
-    Input:
-        h_ri: [..., M, 2]
-    Returns:
-        h_complex: [..., M]
+    Input: h_ri: [..., M, 2]
+    Returns: h_complex: [..., M]
     """
     return h_ri[..., 0] + 1j * h_ri[..., 1]
 
