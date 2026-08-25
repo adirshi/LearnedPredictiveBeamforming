@@ -42,7 +42,7 @@ benchmark_cur_csi = f"results/benchmark_test_results_wsr_vs_snr_{scenario}_curre
 model_path = f"Weights/Predictive_unfolded_WMMSE_model_{scenario}_delta{delta}_L{L}.pt"
 
 @torch.no_grad()
-def evaluate_vs_snr_predictive_model(channel_tplusd,channel_hist_seq,mob_features,checkpoint_path,K,delta=1,batch_size=1):
+def evaluate_vs_snr_predictive_model(channel_tplusd,channel_hist_seq,mob_features,checkpoint_path,K,delta=1,batch_size=64):
     if device.type != "cuda":
         raise RuntimeError("Latency measurement requires a CUDA-enabled GPU.")
 
