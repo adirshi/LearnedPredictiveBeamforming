@@ -1,10 +1,14 @@
 import os
 import copy
+
+import hdf5storage
 import numpy as np
 import torch
 import json
 from pathlib import Path
-from utils import (load_channel_data, channel_to_user_coefficients, ri_to_complex_channel, load_llm_model, predict_future_with_llm)
+from utils import (load_channel_data, channel_to_user_coefficients, ri_to_complex_channel, load_llm_model,
+                   predict_future_with_llm, count_parameters)
+from kalman_filter import predict_future_with_kf
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
@@ -216,7 +220,7 @@ def evaluate_wmmse_benchmark(
     true_userwise:
         [S,N,fut_len,M,2]
     """
-    if mode not in ("current", "genie", "predicted"):
+    if mode not in ("current", "genie", "LLM4CP", "KF"):
         raise ValueError("mode must be one of: 'current', 'genie', 'predicted'")
 
     if mode != "current" and delta > input_userwise.shape[2]:
@@ -259,6 +263,23 @@ def evaluate_wmmse_benchmark(
     wsr_array = np.array(wsr_list, dtype=np.float64)
     return wsr_array, np.mean(wsr_array), np.std(wsr_array)
 
+def compute_nmse(pred_channel, true_channel):
+    """
+    pred_channel, true_channel:
+        [S, N, M, 2] real-imag representation
+
+    Returns:
+        mean NMSE over all samples
+    """
+    pred_complex = pred_channel[..., 0] + 1j * pred_channel[..., 1]
+    true_complex = true_channel[..., 0] + 1j * true_channel[..., 1]
+
+    error_power = np.sum(np.abs(pred_complex - true_complex) ** 2, axis=(1, 2))
+    true_power = np.sum(np.abs(true_complex) ** 2, axis=(1, 2))
+
+    nmse_per_sample = error_power / (true_power + 1e-12)
+
+    return np.mean(nmse_per_sample)
 # =========================
 # Main
 # =========================
@@ -267,42 +288,48 @@ if __name__ == "__main__":
     np.random.seed(1234)
 
     scenario = "UMa"  # "UMa" or "RMa"
-    mode = "predicted"  # "current", "genie", or "predicted"
+    mode = "LLM4CP"  # "current", "genie", "LLM4CP" or "KF"
     delta = 1
     print(f"Scenario: {scenario} | Mode: {mode}")
 
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
     hist_path = PROJECT_ROOT / "data" / scenario / "test" / "H_hist_test_noisy.mat"
     fut_path = PROJECT_ROOT / "data" / scenario / "test" / "H_fut_test.mat"
+    UE_speed_path = PROJECT_ROOT / "data" / scenario / "test" / "UEspeed_test.mat"
     hist_key = "H_hist_test"
     fut_key = "H_fut_test"
     norm_stats_path = (PROJECT_ROOT / "Weights" / f"LLM4CP_{scenario}_norm_stats.json")
     model_path = (PROJECT_ROOT / "Weights" / f"LLM4CP_{scenario}.pth")
-    benchmark_snr_save_path = (PROJECT_ROOT / "results" / f"benchmark_test_results_wsr_vs_snr_{scenario}_{mode}_delta{delta}.npz")
+    benchmark_save_path = (PROJECT_ROOT / "results" / f"benchmark_test_results_wsr_vs_snr_{scenario}_{mode}_delta{delta}.npz")
 
     # -------- load raw data --------
     H_hist, H_fut = load_channel_data(hist_path,fut_path,hist_key=hist_key,fut_key=fut_key)
     print("Raw hist shape:", H_hist.shape)
     print("Raw fut  shape:", H_fut.shape)
 
-    if mode == "predicted":
+    if mode == "LLM4CP":
         # -------- load normalization stats --------
         with open(norm_stats_path, "r", encoding="utf-8") as f:
             stats = json.load(f)
 
         norm_stats = {"mean": torch.tensor(stats["mean"], dtype=torch.float32), "std": torch.tensor(stats["std"], dtype=torch.float32)}
-
         # -------- load pretrained LLM --------
         assert os.path.exists(model_path), f"Missing LLM weights at {model_path}"
         llm_model = load_llm_model(model_path)
         print("Loaded LLM weights.")
+        count_parameters(llm_model)
 
         # -------- predict future channels with LLM --------
-        predicted_future_channel = predict_future_with_llm(model=llm_model,H_hist_raw=H_hist,norm_stats=norm_stats,batch_size=512,num_coefficients=num_coefficients)   # [S,U,L,32,2], ORIGINAL SCALE
+        predicted_future_channel = predict_future_with_llm(model=llm_model,H_hist_raw=H_hist,norm_stats=norm_stats,num_coefficients=num_coefficients)   # [S,U,L,M,2], ORIGINAL SCALE
+
+    if mode == "KF":
+        measurement_noise_var = hdf5storage.loadmat(hist_path)["measurement_noise_var"]  # [S,N]
+        ue_speed = hdf5storage.loadmat(UE_speed_path)["UEspeed_test"]
+        predicted_future_channel = predict_future_with_kf(H_hist,measurement_noise_var,ue_speed,T=5,num_coefficients=num_coefficients)  # [S,N,1,M,2]
 
     # -------- convert true future to userwise real-imag --------
-    future_clean_channel = channel_to_user_coefficients(H_fut)   # [S,N,fut_len,32,2]
-    current_noisy_channel = channel_to_user_coefficients(H_hist) # [S,N,hist_len,32,2]
+    future_clean_channel = channel_to_user_coefficients(H_fut)   # [S,N,fut_len,M,2]
+    current_noisy_channel = channel_to_user_coefficients(H_hist) # [S,N,hist_len,M,2]
     print("current noisy channel shape:", current_noisy_channel.shape)
     print("future clean channel shape:", future_clean_channel.shape)
 
@@ -312,11 +339,20 @@ if __name__ == "__main__":
     elif mode == "genie":
         wmmse_input = future_clean_channel
 
-    elif mode == "predicted":
+    elif mode in ["LLM4CP", "KF"]:
         wmmse_input = predicted_future_channel
+        # -------- NMSE sanity check --------
+        true_future = future_clean_channel[:, :, delta - 1, :, :]  # [S,N,M,2]
+        current_channel = current_noisy_channel[:, :, -1, :, :]  # [S,N,M,2]
+        pred_channel = predicted_future_channel[:, :, 0, :, :]  # [S,N,M,2]
+
+        nmse_current = compute_nmse(current_channel.cpu().numpy(), true_future.cpu().numpy())
+        nmse_pred = compute_nmse(pred_channel.cpu().numpy(), true_future.cpu().numpy())
+        print(f"Current CSI NMSE: {nmse_current:.6f}")
+        print(f"prediction NMSE: {nmse_pred:.6f}")
 
     else:
-        raise ValueError("mode must be one of: 'current', 'genie', 'predicted'")
+        raise ValueError("mode must be one of: 'current', 'genie', 'LLM4CP', 'KF'")
 
     SNR_range = [0, 2.5, 5, 7.5, 10, 12.5]
     benchmark_mean_vs_snr = []
@@ -332,5 +368,5 @@ if __name__ == "__main__":
         print(f"SNR={snr_db} dB | Mean WSR={mean_wsr_test:.6f} | Std={std_wsr_test:.6f}")
 
     os.makedirs("results", exist_ok=True)
-    np.savez(benchmark_snr_save_path,snr_db=np.array(SNR_range),mean_wsr=np.array(benchmark_mean_vs_snr),std_wsr=np.array(benchmark_std_vs_snr))
-    print(f"Saved benchmark SNR results to: {benchmark_snr_save_path}")
+    np.savez(benchmark_save_path,snr_db=np.array(SNR_range),mean_wsr=np.array(benchmark_mean_vs_snr),std_wsr=np.array(benchmark_std_vs_snr))
+    print(f"Saved benchmark results to: {benchmark_save_path}")
