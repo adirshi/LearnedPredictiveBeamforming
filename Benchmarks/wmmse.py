@@ -1,13 +1,11 @@
 import os
 import copy
-
 import hdf5storage
 import numpy as np
 import torch
 import json
 from pathlib import Path
-from utils import (load_channel_data, channel_to_user_coefficients, ri_to_complex_channel, load_llm_model,
-                   predict_future_with_llm, count_parameters)
+from utils import load_channel_data, channel_to_user_coefficients, ri_to_complex_channel, load_llm_model,predict_future_with_llm, count_parameters
 from kalman_filter import predict_future_with_kf
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
