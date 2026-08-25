@@ -42,12 +42,12 @@ benchmark_cur_csi = f"results/benchmark_test_results_wsr_vs_snr_{scenario}_curre
 model_path = f"Weights/Predictive_unfolded_WMMSE_model_{scenario}_delta{delta}_L{L}.pt"
 
 @torch.no_grad()
-def evaluate_vs_snr_predictive_model(channel_tplusd,channel_hist_seq,mob_features,checkpoint_path,K,delta=1,batch_size=64):
+def evaluate_vs_snr_predictive_model(H_future,H_hist_seq,mob_features,checkpoint_path,K,delta=1,batch_size=64):
     if device.type != "cuda":
         raise RuntimeError("Latency measurement requires a CUDA-enabled GPU.")
 
-    S = channel_hist_seq.shape[0]
-    _, N, _, _ = channel_tplusd.shape
+    S = H_hist_seq.shape[0]
+    _, N, _, _ = H_future.shape
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     L = int(checkpoint["L"])
     Gamma = checkpoint["Gamma"].to(device=device, dtype=DTYPE)
@@ -58,6 +58,7 @@ def evaluate_vs_snr_predictive_model(channel_tplusd,channel_hist_seq,mob_feature
     model.eval()
     results = []
     latency_results = []
+    # For latency measurements reported in the paper, use batch_size=1.
     starter = torch.cuda.Event(enable_timing=True)
     ender = torch.cuda.Event(enable_timing=True)
     for snr_db in SNR_range:
@@ -68,16 +69,16 @@ def evaluate_vs_snr_predictive_model(channel_tplusd,channel_hist_seq,mob_feature
         total_inference_time = 0.0
         for start in range(0, S, batch_size):
             end = min(start + batch_size, S)
-            ch_tplusd_batch = channel_tplusd[start:end]
-            H_hist_seq_batch = channel_hist_seq[start:end]
+            H_future_batch = H_future[start:end]
+            H_hist_seq_batch = H_hist_seq[start:end]
             mob_batch = mob_features[start:end]
 
             H_past = H_hist_seq_batch[:, :-1]  # t-T+1, ..., t-1
             H_t = H_hist_seq_batch[:, -1]  # t
-            B = ch_tplusd_batch.shape[0]
+            B = H_future_batch.shape[0]
             cache = build_cache(model=model, H_past=H_past, user_weights=user_weights, total_power=total_power)
 
-            # Skip first 20 runs for GPU warm-up
+            # Skip the first 20 samples for GPU warm-up
             measure_time = total_samples >= 20
             if measure_time:
                 torch.cuda.synchronize()
@@ -91,7 +92,7 @@ def evaluate_vs_snr_predictive_model(channel_tplusd,channel_hist_seq,mob_feature
                 elapsed_ms = starter.elapsed_time(ender)
                 total_inference_time += elapsed_ms
                 timed_samples += B
-            WSR = compute_WSR(noise_power, user_weights, ch_tplusd_batch, V_final)
+            WSR = compute_WSR(noise_power, user_weights, H_future_batch, V_final)
 
             weighted_wsr_sum += WSR.item() * B
             total_samples += B
@@ -117,7 +118,7 @@ if __name__ == "__main__":
 
     # -------- load channels --------
     H_hist, H_fut = load_channel_data(hist_path, fut_path, hist_key=hist_key, fut_key=fut_key)
-    channel_hist_seq_test, channel_tplusd_test = prepare_wmmse_channels(H_hist, H_fut,T,delta,device,DTYPE)
+    H_hist_seq_test, H_future_test = prepare_wmmse_channels(H_hist, H_fut,T,delta,device,DTYPE)
 
     Pxy_test, Vxy_test = load_posvel(Pxy_test_path, Vxy_test_path, pxy_key, vxy_key)
     mob_test = build_mobility_npgr_input(Pxy_test, Vxy_test, T=T)
@@ -127,17 +128,17 @@ if __name__ == "__main__":
 
     # -------- evaluate Predictive unfolded wmmse --------
     print("Predictive Unfolded WMMSE")
-    wsr_predictive_model, latency_predictive  = evaluate_vs_snr_predictive_model(channel_tplusd_test,channel_hist_seq_test,mob_test,model_path,K,delta)
+    wsr_predictive_model, latency_predictive  = evaluate_vs_snr_predictive_model(H_future_test,H_hist_seq_test,mob_test,model_path,K,delta)
     print(f"Overall average predictive inference latency: {np.mean(latency_predictive):.4f} ms/sample")
 
     # -------- load benchmarks --------
     snr_llm4cp, wsr_llm4cp = load_benchmark_results(benchmark_LLM4CP)
     snr_kf, wsr_kf = load_benchmark_results(benchmark_KF)
     snr_genie, wsr_genie = load_benchmark_results(benchmark_genie)
-    snr_current, wsr_current= load_benchmark_results(benchmark_cur_csi)
+    snr_current, wsr_current = load_benchmark_results(benchmark_cur_csi)
 
     # -------- plot --------
-    plt.figure(figsize=(5.0, 3.93))
+    plt.figure(figsize=(5.0, 4.0))
     plt.plot(snr_genie, wsr_genie, linestyle='--', marker='o',label='Genie-Aided CSI + WMMSE')
     plt.plot(snr_llm4cp, wsr_llm4cp, linestyle='--', marker='o',label='LLM4CP + WMMSE')
     plt.plot(SNR_range, wsr_predictive_model, linestyle='--', marker='o',label='Predictive Unfolded WMMSE')
