@@ -14,7 +14,6 @@ __pycache__/
 
 # Data
 data/
-datasets/
 
 # Generated results
 results/
