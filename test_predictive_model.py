@@ -17,7 +17,8 @@ T = 5
 delta = 1
 SNR_range = [0, 2.5, 5, 7.5, 10, 12.5]
 noise_power = torch.tensor(1.0, dtype=DTYPE, device=device)
-scenario = "RMa"  # "UMa" or "RMa"
+batch_size = 1
+scenario = "UMa"  # "UMa" or "RMa"
 
 # test files
 hist_path = f"data/{scenario}/test/H_hist_test_noisy.mat"
@@ -46,8 +47,7 @@ def evaluate_vs_snr_predictive_model(H_future,H_hist_seq,mob_features,checkpoint
     if device.type != "cuda":
         raise RuntimeError("Latency measurement requires a CUDA-enabled GPU.")
 
-    S = H_hist_seq.shape[0]
-    _, N, _, _ = H_future.shape
+    S,_,N,_,_ = H_hist_seq.shape
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     L = int(checkpoint["L"])
     Gamma = checkpoint["Gamma"].to(device=device, dtype=DTYPE)
@@ -61,12 +61,12 @@ def evaluate_vs_snr_predictive_model(H_future,H_hist_seq,mob_features,checkpoint
 
     starter = torch.cuda.Event(enable_timing=True)
     ender = torch.cuda.Event(enable_timing=True)
-    warmup_batches = 4
+    warmup_samples = 20
     for snr_db in SNR_range:
         total_power = 10 ** (snr_db / 10)
         weighted_wsr_sum = 0.0
         total_samples = 0
-        num_timed_batches = 0
+        num_timed_samples = 0
         total_inference_time = 0.0
         for batch_idx, start in enumerate(range(0, S, batch_size)):
             end = min(start + batch_size, S)
@@ -79,30 +79,32 @@ def evaluate_vs_snr_predictive_model(H_future,H_hist_seq,mob_features,checkpoint
             B = H_future_batch.shape[0]
             cache = build_cache(model=model, H_past=H_past, user_weights=user_weights, total_power=total_power)
 
-            # Measure only full batches after GPU warm-up
-            measure_time = batch_idx >= warmup_batches and B == batch_size
+            # Measure only after GPU warm-up
+            measure_time = (batch_size == 1) and (batch_idx >= warmup_samples)
             if measure_time:
                 torch.cuda.synchronize()
                 starter.record()
 
             # Inference
             V_final, _ = model(H_t, mob_batch, cache, total_power, user_weights, stage=2)
+
             if measure_time:
                 ender.record()
                 torch.cuda.synchronize()
                 elapsed_ms = starter.elapsed_time(ender)
                 total_inference_time += elapsed_ms
-                num_timed_batches += 1
-            WSR = compute_WSR(noise_power, user_weights, H_future_batch, V_final)
+                num_timed_samples += 1
 
+            WSR = compute_WSR(noise_power, user_weights, H_future_batch, V_final)
             weighted_wsr_sum += WSR.item() * B
             total_samples += B
 
         avg_wsr = weighted_wsr_sum / total_samples
         results.append(avg_wsr)
-        latency_results.append(total_inference_time / num_timed_batches)
         print(f"[Predictive] SNR={snr_db} dB| WSR={avg_wsr:.6f} ")
-        print(f"Average inference latency: {total_inference_time / num_timed_batches:.4f} ms/batch")
+        if batch_size == 1:
+            latency_results.append(total_inference_time / num_timed_samples)
+            print(f"Average inference latency: {total_inference_time / num_timed_samples:.4f} ms")
     return results, latency_results
 
 def load_benchmark_results(path):
@@ -129,8 +131,9 @@ if __name__ == "__main__":
 
     # -------- evaluate Predictive unfolded wmmse --------
     print("Predictive Unfolded WMMSE")
-    wsr_predictive_model, latency_predictive  = evaluate_vs_snr_predictive_model(H_future_test,H_hist_seq_test,mob_test,model_path,K,delta)
-    print(f"Overall average predictive inference latency: {np.mean(latency_predictive):.4f} ms/batch")
+    wsr_predictive_model, latency_list_per_snr  = evaluate_vs_snr_predictive_model(H_future_test,H_hist_seq_test,mob_test,model_path,K,delta,batch_size)
+    if batch_size == 1:
+        print(f"Overall average predictive inference latency: {np.mean(latency_list_per_snr):.4f} ms")
 
     # -------- load benchmarks --------
     snr_llm4cp, wsr_llm4cp = load_benchmark_results(benchmark_LLM4CP)
