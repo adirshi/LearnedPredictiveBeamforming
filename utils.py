@@ -245,7 +245,6 @@ def normalize_tensor(x, norm_stats):
     scale = norm_stats["scale"]
     return x / scale
 
-
 def denormalize_tensor(x, norm_stats):
     scale = norm_stats["scale"]
     return x * scale
@@ -303,7 +302,7 @@ def predict_future_with_llm(model,H_hist_raw,norm_stats,num_coefficients=32,warm
     # Average online latency per complete channel sample
     # ---------------------------------------------------------
     avg_inference_time_ms = (total_inference_time_ms / timed_samples)
-    print(f"LLM4CP average inference time: {avg_inference_time_ms:.4f} ms/sample")
+    print(f"LLM4CP average inference latency per complete channel realization: {avg_inference_time_ms:.4f} ms")
 
     # ---------------------------------------------------------
     # Reconstruct prediction tensor
