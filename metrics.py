@@ -38,7 +38,6 @@ def NMSE_cuda(x_hat, x):
     nmse = mse / power
     return nmse
 
-
 class NMSELoss(nn.Module):
     def __init__(self, reduction='mean'):
         super(NMSELoss, self).__init__()

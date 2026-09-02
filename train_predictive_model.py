@@ -145,7 +145,7 @@ def train_stage2(H_future_train, H_hist_train_seq, mob_features_train,
     train_loss_history = []
     val_loss_history = []
     epochs_no_improvement = 0
-    patience = 100
+    patience = 40
 
     for epoch in range(num_epochs):
         model.train()

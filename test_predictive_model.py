@@ -1,5 +1,5 @@
-import numpy as np
 import torch
+import numpy as np
 import matplotlib.pyplot as plt
 from metrics import compute_WSR
 from utils import load_channel_data, prepare_wmmse_channels, load_mobility_norm_stats, normalize_mobility_test, load_posvel, build_mobility_npgr_input, build_cache
@@ -15,7 +15,7 @@ K = 4
 L = 5
 T = 5
 delta = 1
-SNR_range = [0, 2.5, 5, 7.5, 10, 12.5]
+snr_range = [0, 2.5, 5, 7.5, 10, 12.5]
 noise_power = torch.tensor(1.0, dtype=DTYPE, device=device)
 batch_size = 1
 scenario = "UMa"  # "UMa" or "RMa"
@@ -43,7 +43,7 @@ benchmark_cur_csi = f"results/benchmark_test_results_wsr_vs_snr_{scenario}_curre
 model_path = f"Weights/Predictive_unfolded_WMMSE_model_{scenario}_delta{delta}_L{L}.pt"
 
 @torch.no_grad()
-def evaluate_vs_snr_predictive_model(H_future,H_hist_seq,mob_features,checkpoint_path,K,delta=1,batch_size=64):
+def evaluate_vs_snr_predictive_model(H_future,H_hist_seq,mob_features,checkpoint_path,K,delta=1,batch_size=64,warmup_samples=10):
     if device.type != "cuda":
         raise RuntimeError("Latency measurement requires a CUDA-enabled GPU.")
 
@@ -61,8 +61,7 @@ def evaluate_vs_snr_predictive_model(H_future,H_hist_seq,mob_features,checkpoint
 
     starter = torch.cuda.Event(enable_timing=True)
     ender = torch.cuda.Event(enable_timing=True)
-    warmup_samples = 20
-    for snr_db in SNR_range:
+    for snr_db in snr_range:
         total_power = 10 ** (snr_db / 10)
         weighted_wsr_sum = 0.0
         total_samples = 0
@@ -112,6 +111,7 @@ def load_benchmark_results(path):
     snr_db = data["snr_db"]
     mean_wsr = data["mean_wsr"]
     return snr_db, mean_wsr
+
 # =========================
 # Main
 # =========================
@@ -143,16 +143,17 @@ if __name__ == "__main__":
 
     # -------- plot --------
     plt.figure(figsize=(5.0, 4.0))
-    plt.plot(snr_genie, wsr_genie, linestyle='--', marker='o',label='Genie-Aided CSI + WMMSE')
-    plt.plot(snr_llm4cp, wsr_llm4cp, linestyle='--', marker='o',label='LLM4CP + WMMSE')
-    plt.plot(SNR_range, wsr_predictive_model, linestyle='--', marker='o',label='Predictive Unfolded WMMSE')
-    plt.plot(snr_kf, wsr_kf, linestyle='--', marker='o',label='KF + WMMSE')
-    plt.plot(snr_current, wsr_current, linestyle='--', marker='o',label='Noisy Current CSI + WMMSE')
+    plt.plot(snr_genie, wsr_genie,linestyle='--', marker='*', color='#0072BD',label='Genie-Aided CSI + WMMSE')
+    plt.plot(snr_llm4cp, wsr_llm4cp,linestyle='--', marker='o', color='#E65F20',label='LLM4CP + WMMSE')
+    plt.plot(snr_range, wsr_predictive_model,linestyle='--', marker='D', color='#77AC30',label='Predictive Unfolded WMMSE')
+    plt.plot(snr_kf, wsr_kf,linestyle='--', marker='^', color='#A2142F',label='Velocity-Aware KF + WMMSE')
+    plt.plot(snr_current, wsr_current,linestyle='--', marker='^', color='#7E2F8E',label='Noisy Current CSI + WMMSE')
+
     plt.xlabel(r"Transmit SNR $P/\sigma^2$ [dB]", fontsize=9)
     plt.ylabel("WSR [bit/s/Hz]", fontsize=9)
     plt.grid(True)
     plt.legend()
-    plt.xticks(SNR_range, fontsize=8)
+    plt.xticks(snr_range, fontsize=8)
     plt.yticks(fontsize=8)
     plt.tight_layout()
     plt.savefig(f"results/WSR_vs_SNR_{scenario}.pdf",bbox_inches="tight")

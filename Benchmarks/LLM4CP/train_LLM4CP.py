@@ -37,6 +37,8 @@ def plot_losses(train_losses, val_losses):
 
 def train(model, training_data_loader, validate_data_loader, optimizer, criterion, device, save_path):
     best_loss = float("inf")
+    patience = 40
+    epoch_without_improvment = 0
     train_losses = []
     val_losses = []
 
@@ -81,13 +83,22 @@ def train(model, training_data_loader, validate_data_loader, optimizer, criterio
             best_loss = val_loss
             save_best_checkpoint(model, save_path)
             print(f"best model saved with val loss {best_loss:.7f}")
+            epoch_without_improvment = 0
+
+        else:
+            epoch_without_improvment += 1
+
+        if epoch_without_improvment >= patience:
+            print(f"Early stopping at epoch {epoch + 1}. "
+                  f"No validation improvement for {patience} epochs.")
+            break
 
     return train_losses, val_losses
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("CUDA available:", torch.cuda.is_available())
-    scenario = "UMa"  # "UMa" or "RMa"
+    scenario = "RMa"  # "UMa" or "RMa"
     os.makedirs("Weights", exist_ok=True)
 
     save_path = f"Weights/LLM4CP_{scenario}.pth"

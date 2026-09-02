@@ -1,129 +1,89 @@
-import numpy as np
 import torch
-from einops import rearrange
-from scipy.special import j0
 
-def predict_future_with_kf(
-        H_hist_raw,
-        measurement_noise_var,
-        ue_speed,
-        delta=1,
-        T=5,
-        num_coefficients=32,
-        carrier_frequency=2.4e9,
-        sampling_interval=0.5e-3,
-        speed_of_light=3e8,
-        channel_variance=1.0):
+@torch.no_grad()
+def predict_future_with_kf(H_hist_seq, measurement_noise_var, ue_speed, delta=1,
+        carrier_frequency=2.4e9, sampling_interval=0.5e-3, channel_variance=1.0):
     """
-    Predict H_(t+delta) using a model-based Kalman filter.
-    The temporal channel evolution is modeled using a first-order
-    autoregressive model:
-        h(t+1) = a * h(t) + q(t)
-
-    where the temporal correlation coefficient is obtained from the Jakes model:
-        a = J0(2*pi*f_D*T_s) , f_D = v * f_c / c
-
-    Inputs
-    ------
-    H_hist_raw:
-        Complex historical CSI.
-        Shape: [S, N, hist_len, Pol, Mv, Mh]
-
-    measurement_noise_var:
-        Measurement-noise variance R for each scene and UE.
-        Shape: [S, N]
-
-    ue_speed:
-        UE speed in meters/second.
-        Shape: [S, N]
-
-    delta:
-        Prediction horizon in channel samples.
-
-    T:
-        Number of historical CSI samples used by the KF.
-
-    Returns
-    -------
-    H_future_pred_ri:
-        Predicted future channel in real-imag representation.
-        Shape: [S, N, 1, M, 2]
+    Vectorized KF prediction for ONE complete channel realization.
+    All N*M channel coefficients are processed in parallel.
+    H_hist_seq: [N,T,M] complex
+    measurement_noise_var: [N]
+    ue_speed: [N]
+    Returns:H_future_pred: [N,M] complex
     """
 
-    # ---------------------------------------------------------
-    # Keep the last T historical CSI samples
-    # ---------------------------------------------------------
-    H_hist_seq = H_hist_raw[:, :, -T:, :, :, :]
-    # [S, N, T, Pol, Mv, Mh]
+    N, T, M = H_hist_seq.shape
+    # =========================================================
+    # Parameters for each UE
+    # =========================================================
+    f_D = ue_speed * carrier_frequency / 3e8
+    x = 2.0 * torch.pi * f_D * sampling_interval
 
-    # Flatten antenna and polarization dimensions:
-    # [S,N,T,Pol,Mv,Mh] -> [S,N,T,M]
-    H_hist_seq = rearrange(H_hist_seq,'s n t pol mv mh -> s n t (pol mv mh)')
-    S, N, _, M = H_hist_seq.shape
-    assert M == num_coefficients, f"Expected {num_coefficients} channel coefficients, got {M}"
-    assert measurement_noise_var.shape == (S, N), f"Expected R shape {(S, N)}, got {measurement_noise_var.shape}"
-    assert ue_speed.shape == (S, N), f"Expected UE speed shape {(S, N)}, "f"got {ue_speed.shape}"
+    # Jakes temporal correlation
+    a = torch.special.bessel_j0(x)
 
-    # ---------------------------------------------------------
-    # Allocate predicted future channel
-    # ---------------------------------------------------------
-    H_future_pred = np.zeros((S, N, M), dtype=np.complex128)
+    # Process noise
+    Q = channel_variance * (1.0 - a.abs() ** 2)
+    Q = torch.clamp(Q,min=1e-12)
+
+    # Measurement noise
+    R = measurement_noise_var
 
     # ---------------------------------------------------------
-    # Run the KF independently for every scene, UE,
-    # and channel coefficient
+    # Add coefficient dimension:
+    # Broadcasting then applies each UE parameter to all M
+    # coefficients simultaneously.
     # ---------------------------------------------------------
-    for s in range(S):
-        for n in range(N):
+    a = a[:, None]       # [N,1]
+    Q = Q[:, None]       # [N,1]
+    R = R[:, None]       # [N,1]
 
-            # CSI measurement-noise variance for this scene and UE
-            R = float(measurement_noise_var[s, n])
+    # =========================================================
+    # KF initialization
+    # =========================================================
 
-            # UE speed [m/s]
-            v = float(ue_speed[s, n])
+    # First historical CSI sample
+    h_hat = H_hist_seq[:, 0, :]
 
-            # Maximum Doppler frequency for this UE
-            f_D = v * carrier_frequency / speed_of_light
+    # Initial estimation-error variance
+    P = torch.full((N, M),channel_variance,dtype=torch.float32,device=H_hist_seq.device)
 
-            a = j0(2.0 * np.pi * f_D * sampling_interval)
+    # =========================================================
+    # Kalman filtering
+    # Only loop remaining is over TIME.
+    # At each t, all N*M coefficients are processed in parallel.
+    # =========================================================
+    for t in range(1, T):
+        # -----------------------------------------------------
+        # Prediction
+        # -----------------------------------------------------
+        h_pred = a * h_hat
+        P_pred = (a.abs() ** 2) * P + Q
 
-            # Process-noise variance.
-            # For the AR(1) model:
-            #     h_(t+1) = a*h_t + q_t
-            # stationarity with E[|h|^2] = channel_variance gives
-            #     Q = sigma_h^2 * (1 - |a|^2)
-            Q = channel_variance * (1.0 - abs(a) ** 2)
-            Q = max(Q, 1e-12)
+        # -----------------------------------------------------
+        # Innovation
+        # -----------------------------------------------------
+        innovation = (H_hist_seq[:, t, :] - h_pred)
+        innovation_var = P_pred + R
 
-            for m in range(M):
-                noisy_sequence = H_hist_seq[s, n, :, m]
-                # [T] complex: h_hat_(t-T+1), ..., h_hat_t
+        # -----------------------------------------------------
+        # Kalman gain
+        # -----------------------------------------------------
+        kalman_gain = P_pred / innovation_var
 
-                H_future_pred[s, n, m] = kalman_predict_coefficient(
-                    noisy_sequence=noisy_sequence,
-                    measurement_noise_var=R,
-                    process_noise_var=Q,
-                    transition_coefficient=a,
-                    delta=delta,
-                    initial_channel_variance=channel_variance)
+        # -----------------------------------------------------
+        # Measurement update
+        # -----------------------------------------------------
+        h_hat = h_pred + kalman_gain * innovation
+        P = (1.0 - kalman_gain)* P_pred
 
-    # ---------------------------------------------------------
-    # Complex -> real/imag representation
-    # [S,N,M] -> [S,N,M,2]
-    # ---------------------------------------------------------
-    H_future_pred_ri = np.stack([H_future_pred.real, H_future_pred.imag],axis=-1).astype(np.float32)
-    # Add future-time dimension:
-    # [S,N,M,2] -> [S,N,1,M,2]
-    H_future_pred_ri = H_future_pred_ri[:, :, None, :, :]
-    return torch.from_numpy(H_future_pred_ri)
+    # =========================================================
+    # Delta-step prediction
+    # =========================================================
+    H_future_pred = (a ** delta) * h_hat
+    return H_future_pred
 
-def kalman_predict_coefficient(
-        noisy_sequence,
-        measurement_noise_var,
-        process_noise_var,
-        transition_coefficient,
-        delta=1,
-        initial_channel_variance=1.0):
+def kalman_predict_coefficient(noisy_sequence,measurement_noise_var,process_noise_var,transition_coefficient,delta=1,initial_channel_variance=1.0):
     """
     Kalman prediction for one complex channel coefficient.
     State model:
@@ -136,26 +96,14 @@ def kalman_predict_coefficient(
 
     Inputs
     ------
-    noisy_sequence:
-        Noisy historical CSI samples.
-        Shape: [T] [h_hat_(t-T+1), ..., h_hat_t]
-
-    measurement_noise_var:
-        Measurement-noise variance R.
-
-    process_noise_var:
-        Process-noise variance Q.
-
-    transition_coefficient:
-        AR(1) transition coefficient a.
-
-    delta:
-        Number of future channel samples to predict.
+    noisy_sequence: Noisy historical CSI samples. Shape: [T] [h_hat_(t-T+1), ..., h_hat_t]
+    measurement_noise_var: Measurement-noise variance R.
+    process_noise_var: Process-noise variance Q.
+    transition_coefficient: AR(1) transition coefficient a.
 
     Returns
     -------
-    h_future_pred:
-        Complex delta-step channel prediction h_hat_(t+delta|t).
+    h_future_pred: Complex delta-step channel prediction h_hat_(t+delta|t).
     """
 
     T = len(noisy_sequence)

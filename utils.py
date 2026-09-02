@@ -231,9 +231,6 @@ def normalize_mobility_test(test_mob, mean, std, eps=1e-6):
     std = np.maximum(std, eps)
     return ((test_mob - mean) / std).astype(np.float32)
 
-# =========================
-# LLM inference
-# =========================
 def load_llm_model(weights_path):
     model = LLMModel(pred_len=llm_pred_len, prev_len=llm_prev_len, patch_size=llm_patch_size).to(device)
     state = torch.load(weights_path, map_location=device,weights_only=True)
@@ -248,71 +245,6 @@ def normalize_tensor(x, norm_stats):
 def denormalize_tensor(x, norm_stats):
     scale = norm_stats["scale"]
     return x * scale
-
-@torch.no_grad()
-def predict_future_with_llm(model,H_hist_raw,norm_stats,num_coefficients=32,warmup_samples=20):
-    """
-    H_hist_raw:
-        [S,N,hist_len,Pol,Mv,Mh] complex
-    Returns:
-        pred_userwise:
-        [S,N,fut_len,32,2] in original (de-normalized) scale
-    Also reports average online inference latency for one complete
-    channel sample, i.e., all N users and all channel coefficients.
-    """
-    # ---------------------------------------------------------
-    # Convert channel history to coefficient-wise sequences
-    # ---------------------------------------------------------
-    x_llm, S, N = channel_history_to_coefficient_sequences(H_hist_raw,num_coefficients=num_coefficients)# x_llm: [S*N*M, P, 2]
-
-    # Normalize using TRAIN statistics
-    x_llm_norm = normalize_tensor(x_llm, norm_stats)
-    # Number of coefficient sequences belonging to one complete scene
-    sequences_per_sample = N * num_coefficients
-    pred_sequences = []
-    total_inference_time_ms = 0.0
-    timed_samples = 0
-    starter = torch.cuda.Event(enable_timing=True)
-    ender = torch.cuda.Event(enable_timing=True)
-    # ---------------------------------------------------------
-    # Process one complete scene at a time
-    # ---------------------------------------------------------
-    for s in range(S):
-        start_idx = s * sequences_per_sample
-        end_idx = (s + 1) * sequences_per_sample
-        # All N*M coefficient sequences of scene s
-        x_sample = x_llm_norm[start_idx:end_idx].to(device)
-        # [N*M, P, 2]
-        measure_time = s >= warmup_samples
-        if measure_time:
-            torch.cuda.synchronize()
-            starter.record()
-        # -----------------------------------------------------
-        # LLM4CP inference for the complete channel sample
-        # -----------------------------------------------------
-        y_sample = model(x_sample,None,None,None)# [N*M, fut_len, 2]
-        if measure_time:
-            ender.record()
-            torch.cuda.synchronize()
-            elapsed_ms = starter.elapsed_time(ender)
-            total_inference_time_ms += elapsed_ms
-            timed_samples += 1
-        pred_sequences.append(y_sample.cpu())
-    # ---------------------------------------------------------
-    # Average online latency per complete channel sample
-    # ---------------------------------------------------------
-    avg_inference_time_ms = (total_inference_time_ms / timed_samples)
-    print(f"LLM4CP average inference latency per complete channel realization: {avg_inference_time_ms:.4f} ms")
-
-    # ---------------------------------------------------------
-    # Reconstruct prediction tensor
-    # ---------------------------------------------------------
-    pred_sequences = torch.cat(pred_sequences,dim=0)# [S*N*M, fut_len, 2]
-    # De-normalize prediction
-    pred_sequences = denormalize_tensor(pred_sequences,norm_stats)
-    # [S*N*M,fut_len,2] -> [S,N,fut_len,M,2]
-    pred_user_channels = coefficient_sequences_to_user_channels(pred_sequences,S,N,num_coefficients=num_coefficients)
-    return pred_user_channels
 
 def count_parameters(model):
     total_params = sum(p.numel() for p in model.parameters())
