@@ -18,7 +18,7 @@ delta = 1
 snr_range = [0, 2.5, 5, 7.5, 10, 12.5]
 noise_power = torch.tensor(1.0, dtype=DTYPE, device=device)
 batch_size = 1
-scenario = "UMa"  # "UMa" or "RMa"
+scenario = "RMa"  # "UMa" or "RMa"
 
 # test files
 hist_path = f"data/{scenario}/test/H_hist_test_noisy.mat"
@@ -147,7 +147,7 @@ if __name__ == "__main__":
     plt.plot(snr_llm4cp, wsr_llm4cp,linestyle='--', marker='o', color='#E65F20',label='LLM4CP + WMMSE')
     plt.plot(snr_range, wsr_predictive_model,linestyle='--', marker='D', color='#77AC30',label='Predictive Unfolded WMMSE')
     plt.plot(snr_kf, wsr_kf,linestyle='--', marker='^', color='#A2142F',label='Velocity-Aware KF + WMMSE')
-    plt.plot(snr_current, wsr_current,linestyle='--', marker='^', color='#7E2F8E',label='Noisy Current CSI + WMMSE')
+    plt.plot(snr_current, wsr_current,linestyle='--', marker='v', color='#7E2F8E',label='Noisy Current CSI + WMMSE')
 
     plt.xlabel(r"Transmit SNR $P/\sigma^2$ [dB]", fontsize=9)
     plt.ylabel("WSR [bit/s/Hz]", fontsize=9)
