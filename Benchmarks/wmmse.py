@@ -448,8 +448,8 @@ if __name__ == "__main__":
     torch.manual_seed(1234)
     np.random.seed(1234)
 
-    scenario = "RMa"  # "UMa" or "RMa"
-    mode = "KF"   # "current", "genie", "LLM4CP" or "KF"
+    scenario = "UMa"  # "UMa" or "RMa"
+    mode = "genie"   # "current", "genie", "LLM4CP" or "KF"
     delta = 1
 
     SNR_range = [0, 2.5, 5, 7.5, 10, 12.5]
